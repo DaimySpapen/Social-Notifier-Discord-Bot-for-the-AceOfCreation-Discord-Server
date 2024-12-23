@@ -1,25 +1,29 @@
-const { Client, GatewayIntentBits, ActivityType } = require('discord.js'); // discord api wrapper
-const fetch = require('node-fetch'); // for api requests
-const cron = require('node-cron'); // for intervals
-const fs = require('fs'); // for writing/reading json files
-require('dotenv').config(); // configuration file for sensitive information (like discord token and youtube api keys)
+const { Client, GatewayIntentBits, ActivityType } = require('discord.js');
+const fetch = require('node-fetch');
+const cron = require('node-cron');
+const fs = require('fs');
+require('dotenv').config();
+require('events').setMaxListeners(20); // set max event listerners to 20 to see if it has to do with the memory leak
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 const videoDataFile = 'videos.json'; // json file for video ids
-let lastVideos = []; // array to save last 5 video ids
-let isCheckingVideo = false; // lock for overlapping api calls
+let lastVideos = [];
+let notifiedVideos = new Set();
+let isCheckingVideo = false;
 
-// api key array voor rotatie
+// api key array
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1,
     process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3,
-    process.env.YOUTUBE_API_KEY_4
+    process.env.YOUTUBE_API_KEY_4,
+    process.env.YOUTUBE_API_KEY_5,
+    process.env.YOUTUBE_API_KEY_6
 ];
-let apiKeyIndex = 0; // track current api key
+let apiKeyIndex = 0;
 
-// load saved video ids on start
+// load saved video ids and timestamps on start
 function loadVideoData() {
     if (fs.existsSync(videoDataFile)) {
         const data = JSON.parse(fs.readFileSync(videoDataFile, 'utf-8'));
@@ -29,7 +33,7 @@ function loadVideoData() {
     }
 }
 
-// save only the last 5 video ids
+// save only the last 5 video ids and timestamps
 function saveVideoData() {
     fs.writeFileSync(
         videoDataFile,
@@ -45,7 +49,7 @@ function getNextApiKey() {
     return key;
 }
 
-// better API key rotation with fallback
+// fetch with retries and better api key rotation
 async function fetchWithRetries(url) {
     let retries = 0;
     while (retries < apiKeys.length) {
@@ -86,15 +90,22 @@ async function checkNewVideo() {
 
         // filter only video items
         const validVideos = data.items.filter(item => item.id.kind === 'youtube#video');
-        const newVideoIds = validVideos.map(video => video.id.videoId);
+        const newVideos = validVideos.map(video => ({
+            id: video.id.videoId,
+            publishedAt: video.snippet.publishedAt
+        }));
 
-        // check if there are new videos
-        const unseenVideos = newVideoIds.filter(videoId => !lastVideos.includes(videoId));
+        // check for new unseen videos with valid timestamps
+        const unseenVideos = newVideos.filter(video => {
+            const isNew = !lastVideos.some(v => v.id === video.id);
+            const isLater = !lastVideos.length || new Date(video.publishedAt) > new Date(lastVideos[lastVideos.length - 1].publishedAt);
+            return isNew && isLater;
+        });
 
         if (unseenVideos.length > 0) {
-            for (const videoId of unseenVideos.reverse()) {
-                notifyDiscord(videoId);
-                lastVideos.push(videoId); // add to the buffer
+            for (const video of unseenVideos.reverse()) {
+                notifyDiscord(video.id);
+                lastVideos.push(video); // add to the buffer
             }
             // keep only the last 5 videos in memory
             lastVideos = lastVideos.slice(-5);
@@ -111,10 +122,15 @@ async function checkNewVideo() {
 
 // send notifications to Discord
 function notifyDiscord(videoId) {
+    if (notifiedVideos.has(videoId)) return; // prevent duplicate notifications
+
     const channel = client.channels.cache.get(process.env.DISCORD_CHANNEL_ID);
     if (channel) {
-        channel.send(`Hey @everyone, AceOfCreation just posted a new video! 🎥 Check it out:\nhttps://www.youtube.com/watch?v=${videoId}`);
+        channel.send(`Hey @everyone, AceOfCreation just posted a new video! 🎥 Check it out:
+https://www.youtube.com/watch?v=${videoId}`);
         console.log(`Notified about video: ${videoId}`);
+        notifiedVideos.add(videoId);
+        setTimeout(() => notifiedVideos.delete(videoId), 86400000); // remove from notified set after 24 hours
     } else {
         console.error('Discord channel not found.');
     }
@@ -125,25 +141,18 @@ client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
     loadVideoData();
 
-    const statuses = [
-        { name: 'AceOfCreation', type: ActivityType.Listening },
-        { name: 'you', type: ActivityType.Watching }
-    ];
-
-    let currentIndex = 0;
-    setInterval(() => {
-        const nextStatus = statuses[currentIndex];
-        client.user.setPresence({
-            status: 'online',
-            activities: [nextStatus],
+    // set status at 12 midnight because otherwise it somehow stops working
+    cron.schedule('0 * * * *', () => {
+        client.user.setActivity({
+            name: 'AceOfCreation',
+            type: ActivityType.Listening,
         });
-        currentIndex = (currentIndex + 1) % statuses.length;
-    }, 10000);
+    })
 
-    cron.schedule('*/3 * * * *', checkNewVideo); // every 3 minutes check for video ids
+    cron.schedule('*/3 * * * *', checkNewVideo);
 });
 
-// test API keys on startup
+// test api keys on startup
 async function testApiKeys() {
     console.log('Testing API keys...');
     for (const apiKey of apiKeys) {
@@ -162,5 +171,5 @@ async function testApiKeys() {
     }
 }
 
-testApiKeys(); // test API keys on startup
+testApiKeys();
 client.login(process.env.DISCORD_TOKEN);
