@@ -3,7 +3,7 @@ const fetch = require('node-fetch');
 const cron = require('node-cron');
 const fs = require('fs');
 require('dotenv').config();
-require('events').setMaxListeners(20); // set max event listerners to 20 to see if it has to do with the memory leak
+require('events').setMaxListeners(20); // set max event listerners to 20 to see if it has to do with the "memory leak"
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -120,7 +120,7 @@ async function checkNewVideo() {
     }
 }
 
-// send notifications to Discord
+// send notifications to discord
 function notifyDiscord(videoId) {
     if (notifiedVideos.has(videoId)) return; // prevent duplicate notifications
 
@@ -136,18 +136,20 @@ https://www.youtube.com/watch?v=${videoId}`);
     }
 }
 
-// start bot and set status
+// start bot or login client tf if i care its 02:31
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
     loadVideoData();
 
+    client.user.setActivity({ name: 'AceOfCreation', type:ActivityType.Listening}); // set status first on startup
+
     // set status at 12 midnight because otherwise it somehow stops working
-    cron.schedule('0 * * * *', () => {
+    cron.schedule('0 0 0 * * *', () => {
         client.user.setActivity({
             name: 'AceOfCreation',
             type: ActivityType.Listening,
         });
-    })
+    });
 
     cron.schedule('*/3 * * * *', checkNewVideo);
 });
